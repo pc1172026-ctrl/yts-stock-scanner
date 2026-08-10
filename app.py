@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 from yts_engine import *
-
+from yts_engine import load_history
 st.set_page_config(page_title="YTS v0.6",page_icon="📈",layout="wide")
 ensure_dirs()
 st.title("YTS 台股多頭突破回測掃描器 v0.6")
