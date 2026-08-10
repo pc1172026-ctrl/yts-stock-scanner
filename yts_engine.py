@@ -119,7 +119,8 @@ def load_history():
     if not fs:return pd.DataFrame()
     x=pd.concat([pd.read_csv(f,dtype={"stock_id":str}) for f in fs],ignore_index=True)
     x["date"]=pd.to_datetime(x["date"],errors="coerce").dt.date
-    for c in ["open","high","low","close","volume"]:x[c]=pd.to_numeric(x[c],errors="coerce")
+    for c in ["open","high","low","close","volume"]:
+        x[c]=pd.to_numeric(x[c],errors="coerce")
     return x.dropna(subset=["date","stock_id","close"]).sort_values(["market","stock_id","date"]).drop_duplicates(["market","stock_id","date"],keep="last")
 
 def indicators(df):
@@ -134,6 +135,7 @@ def indicators(df):
     rng=x["high"]-x["low"]
     x["foot_ratio"]=np.where(rng>0,(x["close"]-x["low"])/rng,np.nan)
     x["days"]=g["close"].transform("count")
+    x["pct_from_ma20"]=(x["close"]/x["ma20"]-1)*100
     return x
 
 def snapshot(df):
@@ -141,14 +143,53 @@ def snapshot(df):
     x=indicators(df)
     return x.groupby(["market","stock_id"],as_index=False).tail(1).reset_index(drop=True)
 
+def calc_yts_score(row):
+    score=0
+    if pd.notna(row.get("ma20")) and row["close"]>row["ma20"]:score+=15
+    if pd.notna(row.get("ma60")) and pd.notna(row.get("ma20")) and row["ma20"]>row["ma60"]:score+=15
+    vr=row.get("vol_ratio20",np.nan)
+    if pd.notna(vr):
+        if vr>=2.5:score+=30
+        elif vr>=2.0:score+=25
+        elif vr>=1.5:score+=20
+        elif vr>=1.2:score+=10
+    dist=row.get("pct_from_ma20",np.nan)
+    if pd.notna(dist):
+        if 0<=dist<=5:score+=20
+        elif 5<dist<=10:score+=12
+        elif 10<dist<=15:score+=6
+    foot=row.get("foot_ratio",np.nan)
+    if pd.notna(foot):
+        if foot>=2/3:score+=20
+        elif foot>=0.5:score+=12
+        elif foot>=1/3:score+=6
+    return int(max(0,min(100,score)))
+
+def classify_stage(row):
+    p20=row.get("prior20_high",np.nan)
+    if pd.isna(p20):return "資料不足"
+    if row["close"]>p20:return "今日突破20日高｜第一根不追"
+    touched=row["low"]<=p20<=row["high"]
+    foot=row.get("foot_ratio",np.nan)
+    if touched and row["close"]>=p20 and pd.notna(foot) and foot>=2/3:
+        return "回測20日高＋嚴格收腳"
+    if touched and row["close"]>=p20 and pd.notna(foot) and foot>=0.5:
+        return "回測20日高＋一般收腳"
+    dist=abs(row["close"]-p20)/p20 if p20 else np.nan
+    if pd.notna(dist) and dist<=0.02:return "接近20日高｜等待確認"
+    return "帶量多頭｜人工看整理/頸線"
+
 def yts_candidates(df):
     s=snapshot(df)
     if s.empty:return s
     ok=(s.days>=21)&(s.close>s.ma20)&(s.vol_ratio20>=1.5)
     out=s[ok].copy()
-    out["strong_trend"]=out.ma20>out.ma60
-    out["stage"]="帶量候選；需人工確認整理/頸線；第一根不追"
-    return out
+    out["strong_trend"]=(out["ma20"]>out["ma60"])&out["ma60"].notna()
+    out["stage"]=out.apply(classify_stage,axis=1)
+    out["yts_score"]=out.apply(calc_yts_score,axis=1)
+    out["action_hint"]=np.where(out["stage"].str.contains("第一根不追",na=False),"觀察，不追價",
+                        np.where(out["stage"].str.contains("收腳",na=False),"優先人工確認型態/頸線","等待"))
+    return out.sort_values(["yts_score","vol_ratio20"],ascending=[False,False]).reset_index(drop=True)
 
 def import_official_csv(file_bytes,market,stock_id="",name=""):
     bio=io.BytesIO(file_bytes); df=None
