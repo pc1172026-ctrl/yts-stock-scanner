@@ -7,7 +7,7 @@ from yts_engine import load_history
 from stage1_data import stage1_snapshot, load_fundamentals, trust_snapshot
 
 st.set_page_config(
-    page_title="YTS v1.0 Stage1",
+    page_title="YTS v1.1 穩定排序版",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -94,8 +94,8 @@ def watch_status(r):
 
 ensure_dirs()
 
-st.title("YTS 台股多頭突破回測掃描器 v1.0｜第一階段")
-st.caption("技術面＋投信初買＋營收雙成長＋最新累計EPS為正")
+st.title("YTS 台股多頭突破回測掃描器 v1.1｜穩定排序版")
+st.caption("技術面＋投信＋營收確認｜EPS／籌碼／大戶暫由人工判斷")
 
 hist = load_history()
 stage1 = stage1_snapshot(lookback=10)
@@ -114,8 +114,8 @@ with st.sidebar:
     st.divider()
     st.header("第一階段設定")
     trust_days = st.slider("投信初買回看交易日", 3, 20, 10)
-    hard_filter = st.checkbox("精選只顯示：營收雙成長＋EPS>0", value=False)
-    trust_only = st.checkbox("精選只顯示：投信今日買超", value=False)
+    priority_only = st.checkbox("只顯示 🔥 優先看", value=False)
+    trust_only = st.checkbox("只顯示：投信今日買超", value=False)
 
     if trust_days != 10:
         stage1 = stage1_snapshot(lookback=trust_days)
@@ -136,7 +136,8 @@ d.metric("可算60MA", int((s.days >= 60).sum()))
 
 tabs = st.tabs([
     "🔥 初篩候選",
-    "🎯 精選＋第一階段",
+    "🎯 精選候選",
+    "⭐ 優先看",
     "🧩 第一階段資料",
     "⭐ 我的追蹤",
     "📊 多日診斷",
@@ -150,7 +151,7 @@ def enrich_stage1(df):
         for c in [
             "trust_net","trust_first_buy","trust_streak","trust_status",
             "revenue_month_yoy","revenue_cum_yoy","revenue_double_growth",
-            "eps_cumulative","eps_positive","stage1_score"
+            "stage1_score"
         ]:
             x[c] = pd.NA
         return x
@@ -179,61 +180,146 @@ with tabs[0]:
         show_cols = [c for c in show_cols if c in e.columns]
         st.dataframe(e[show_cols], use_container_width=True, hide_index=True)
 
-with tabs[1]:
-    st.subheader("🎯 精選＋第一階段")
-    st.caption("第一階段先作『確認與排序』，預設不硬淘汰；可在側邊欄開啟硬條件。")
+def build_refined(cand_df):
+    if cand_df.empty:
+        return pd.DataFrame()
 
-    refined = pd.DataFrame()
-    if not cand.empty:
-        refined = cand.copy()
-        refined["距MA20%"] = (refined["close"] / refined["ma20"] - 1) * 100
-        refined["收腳%"] = refined["foot_ratio"] * 100
-        refined = refined[
-            refined["ma60"].notna()
-            & (refined["ma20"] > refined["ma60"])
-            & refined["vol_ratio20"].between(1.5, 4.0)
-            & refined["距MA20%"].between(0, 8)
-            & (refined["收腳%"] >= 50)
-            & (~refined["stage"].str.contains("第一根不追", na=False))
-        ].copy()
+    refined = cand_df.copy()
+    refined["距MA20%"] = (refined["close"] / refined["ma20"] - 1) * 100
+    refined["收腳%"] = refined["foot_ratio"] * 100
 
-        refined = enrich_stage1(refined)
-        refined["stage1_score"] = pd.to_numeric(refined["stage1_score"], errors="coerce").fillna(0)
-        refined["總排序分"] = (refined["yts_score"] + refined["stage1_score"]).clip(upper=100)
-
-        if hard_filter:
-            refined = refined[
-                (refined["revenue_double_growth"] == True)
-                & (refined["eps_positive"] == True)
-            ]
-
-        if trust_only:
-            refined = refined[pd.to_numeric(refined["trust_net"], errors="coerce") > 0]
-
-        refined = refined.sort_values(
-            ["總排序分","stage1_score","yts_score","vol_ratio20"],
-            ascending=False
-        ).head(20)
+    refined = refined[
+        refined["ma60"].notna()
+        & (refined["ma20"] > refined["ma60"])
+        & refined["vol_ratio20"].between(1.5, 4.0)
+        & refined["距MA20%"].between(0, 8)
+        & (refined["收腳%"] >= 50)
+        & (~refined["stage"].str.contains("第一根不追", na=False))
+    ].copy()
 
     if refined.empty:
-        st.info("目前沒有符合本次精選條件的標的。")
+        return refined
+
+    refined = enrich_stage1(refined)
+    refined["stage1_score"] = pd.to_numeric(
+        refined.get("stage1_score"), errors="coerce"
+    ).fillna(0)
+
+    # 目前只讓「投信 + 營收」參與 Stage1 加分；EPS 暫停。
+    refined["總排序分"] = (
+        pd.to_numeric(refined["yts_score"], errors="coerce").fillna(0)
+        + refined["stage1_score"]
+    ).clip(upper=100)
+
+    # 人工複核導向的透明分級，不因資料缺漏刪股票。
+    trust_net = pd.to_numeric(refined.get("trust_net"), errors="coerce")
+    trust_first = refined.get("trust_first_buy", pd.Series(False, index=refined.index)).fillna(False)
+    rev_ok = refined.get("revenue_double_growth", pd.Series(False, index=refined.index)).fillna(False)
+
+    refined["第一階段確認數"] = (
+        (trust_net > 0).fillna(False).astype(int)
+        + trust_first.astype(int)
+        + rev_ok.astype(int)
+    )
+
+    # 技術位置越靠近 MA20、收腳越完整，優先度越高。
+    tech_good = (
+        refined["距MA20%"].between(0, 5)
+        & refined["vol_ratio20"].between(1.5, 3.5)
+        & (refined["收腳%"] >= 55)
+    )
+
+    refined["優先級"] = "🟡 一般候選"
+    refined.loc[tech_good, "優先級"] = "⭐ 觀察"
+    refined.loc[
+        tech_good & (refined["第一階段確認數"] >= 1),
+        "優先級"
+    ] = "🔥 優先看"
+
+    order = pd.Categorical(
+        refined["優先級"],
+        categories=["🔥 優先看", "⭐ 觀察", "🟡 一般候選"],
+        ordered=True
+    )
+    refined["_priority_order"] = order
+    refined = refined.sort_values(
+        ["_priority_order", "總排序分", "stage1_score", "yts_score", "vol_ratio20"],
+        ascending=[True, False, False, False, False]
+    )
+    return refined
+
+
+with tabs[1]:
+    st.subheader("🎯 精選候選")
+    st.caption(
+        "先用技術面縮小範圍，再用投信與營收作確認。"
+        "EPS、主力、大戶、家數差目前不自動淘汰，留給人工複核。"
+    )
+
+    refined = build_refined(cand)
+
+    if trust_only and not refined.empty:
+        refined = refined[
+            pd.to_numeric(refined["trust_net"], errors="coerce") > 0
+        ]
+
+    if priority_only and not refined.empty:
+        refined = refined[refined["優先級"] == "🔥 優先看"]
+
+    if refined.empty:
+        st.info("目前沒有符合精選條件的標的。")
     else:
         show_cols = [
-            "stock_id","name","close","ma20","ma60","vol_ratio20","foot_ratio",
+            "優先級","stock_id","name","close","ma20","ma60",
+            "距MA20%","vol_ratio20","收腳%",
             "trust_status","trust_net",
             "revenue_month_yoy","revenue_cum_yoy","revenue_double_growth",
-            "eps_cumulative","eps_positive",
-            "yts_score","stage1_score","總排序分","stage"
+            "第一階段確認數","yts_score","stage1_score","總排序分","stage"
         ]
         show_cols = [c for c in show_cols if c in refined.columns]
-        st.dataframe(refined[show_cols], use_container_width=True, hide_index=True)
+        st.dataframe(
+            refined[show_cols].head(30),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("🔥 優先看", int((refined["優先級"] == "🔥 優先看").sum()))
+        c2.metric("⭐ 觀察", int((refined["優先級"] == "⭐ 觀察").sum()))
+        c3.metric("🟡 一般", int((refined["優先級"] == "🟡 一般候選").sum()))
 
         st.info(
-            "營收『雙成長』目前定義為：最新月營收 YoY > 0 且累計營收 YoY > 0。"
-            "這不是『連續3個月成長』；等我們累積月資料後再測更嚴格版本。"
+            "目前營收『雙成長』＝最新月營收 YoY > 0 且累計營收 YoY > 0。"
+            "EPS、主力買賣超、大戶散戶比、家數差與隔日沖券商，暫由人工判斷。"
         )
 
 with tabs[2]:
+    st.subheader("⭐ 優先看")
+    refined = build_refined(cand)
+    priority = refined[refined["優先級"] == "🔥 優先看"].copy() if not refined.empty else pd.DataFrame()
+
+    if priority.empty:
+        st.info("今天沒有 🔥 優先看；可到『🎯 精選候選』查看 ⭐ 觀察。")
+    else:
+        st.caption("這裡只保留技術面位置較佳，且至少有一項投信／營收確認的候選。")
+        show_cols = [
+            "stock_id","name","close","距MA20%","vol_ratio20","收腳%",
+            "trust_status","trust_net",
+            "revenue_month_yoy","revenue_cum_yoy","revenue_double_growth",
+            "yts_score","stage1_score","總排序分","stage"
+        ]
+        show_cols = [c for c in show_cols if c in priority.columns]
+        st.dataframe(
+            priority[show_cols].head(15),
+            use_container_width=True,
+            hide_index=True
+        )
+        st.warning(
+            "🔥 優先看只是盤後排序，不代表買進訊號。"
+            "下單前仍人工確認 EPS、主力／大戶籌碼、家數差、隔日沖分點與上方壓力。"
+        )
+
+with tabs[5]:
     st.subheader("🧩 第一階段資料品質")
 
     if stage1 is None or stage1.empty:
@@ -244,8 +330,7 @@ with tabs[2]:
             "market","stock_id","trust_date","trust_net","trust_first_buy",
             "trust_streak","trust_history_count","trust_status",
             "revenue_period","revenue_month_yoy","revenue_cum_yoy",
-            "revenue_double_growth","eps_year","eps_quarter",
-            "eps_cumulative","eps_positive","stage1_score"
+            "revenue_double_growth","stage1_score"
         ]
         show_cols = [c for c in show_cols if c in stage1.columns]
         st.dataframe(stage1[show_cols], use_container_width=True, hide_index=True)
@@ -276,11 +361,10 @@ with tabs[3]:
                     c1.metric("收盤", f"{r['close']:.2f}")
                     c2.metric("20MA", f"{r['ma20']:.2f}" if pd.notna(r.get("ma20")) else "-")
                     c3.metric("投信", _txt(r.get("trust_status","")) or "-")
-                    c4.metric("EPS", f"{r['eps_cumulative']:.2f}" if pd.notna(r.get("eps_cumulative")) else "-")
+                    c4.metric("Stage1", f"{r['stage1_score']:.0f}" if pd.notna(r.get("stage1_score")) else "0")
 
                     rev_ok = "✅" if r.get("revenue_double_growth") is True else "—"
-                    eps_ok = "✅" if r.get("eps_positive") is True else "—"
-                    st.write(f"營收雙成長：{rev_ok}　｜　EPS>0：{eps_ok}")
+                    st.write(f"營收雙成長：{rev_ok}　｜　EPS／籌碼：人工判斷")
 
                 support = st.text_input("自訂支撐", value=_txt(r.get("support","")), key=f"s_{market}_{sid}_{i}")
                 resistance = st.text_input("自訂壓力", value=_txt(r.get("resistance","")), key=f"r_{market}_{sid}_{i}")
