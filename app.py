@@ -1,6 +1,7 @@
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from yts_engine import *
 from yts_engine import load_history
@@ -212,12 +213,25 @@ def build_refined(cand_df):
     ).clip(upper=100)
 
     # 人工複核導向的透明分級，不因資料缺漏刪股票。
-    trust_net = pd.to_numeric(refined.get("trust_net"), errors="coerce")
-    trust_first = refined.get("trust_first_buy", pd.Series(False, index=refined.index)).fillna(False)
-    rev_ok = refined.get("revenue_double_growth", pd.Series(False, index=refined.index)).fillna(False)
+    # 確保即使 Stage1 尚未合併出投信欄位，也一定是 Series，
+    # 避免 scalar bool / None 造成 .fillna() AttributeError。
+    if "trust_net" in refined.columns:
+        trust_net = pd.to_numeric(refined["trust_net"], errors="coerce")
+    else:
+        trust_net = pd.Series(np.nan, index=refined.index)
+
+    if "trust_first_buy" in refined.columns:
+        trust_first = refined["trust_first_buy"].fillna(False).astype(bool)
+    else:
+        trust_first = pd.Series(False, index=refined.index)
+
+    if "revenue_double_growth" in refined.columns:
+        rev_ok = refined["revenue_double_growth"].fillna(False).astype(bool)
+    else:
+        rev_ok = pd.Series(False, index=refined.index)
 
     refined["第一階段確認數"] = (
-        (trust_net > 0).fillna(False).astype(int)
+        trust_net.gt(0).fillna(False).astype(int)
         + trust_first.astype(int)
         + rev_ok.astype(int)
     )
