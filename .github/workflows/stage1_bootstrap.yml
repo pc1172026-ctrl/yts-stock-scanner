@@ -1,0 +1,31 @@
+name: YTS Bootstrap Stage1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Bootstrap Stage1
+        run: python bootstrap_stage1.py
+      - name: Commit Stage1 history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/stage1/
+          if git diff --cached --quiet; then
+            echo "No Stage1 changes."
+          else
+            git commit -m "Bootstrap YTS Stage1"
+            git push
+          fi
