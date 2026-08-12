@@ -16,6 +16,9 @@ TWSE_ALL="https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 TWSE_MI="https://www.twse.com.tw/exchangeReport/MI_INDEX"
 TPEX_ALL="https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
 
+# YTS 基礎流動性門檻：300張 = 300,000股
+MIN_DAILY_VOLUME_SHARES = 300_000
+
 def ensure_dirs():
     DAILY.mkdir(parents=True,exist_ok=True)
     WATCH.parent.mkdir(parents=True,exist_ok=True)
@@ -136,6 +139,8 @@ def indicators(df):
     x["foot_ratio"]=np.where(rng>0,(x["close"]-x["low"])/rng,np.nan)
     x["days"]=g["close"].transform("count")
     x["pct_from_ma20"]=(x["close"]/x["ma20"]-1)*100
+    # 原始成交量欄位為「股」，換算成「張」方便手機畫面驗證
+    x["volume_lots"]=x["volume"]/1000
     return x
 
 def snapshot(df):
@@ -182,7 +187,7 @@ def classify_stage(row):
 def yts_candidates(df):
     s=snapshot(df)
     if s.empty:return s
-    ok=(s.days>=21)&(s.close>s.ma20)&(s.vol_ratio20>=1.5)
+    ok=(s.days>=21)&(s.close>s.ma20)&(s.vol_ratio20>=1.5)&(s.volume>=MIN_DAILY_VOLUME_SHARES)
     out=s[ok].copy()
     out["strong_trend"]=(out["ma20"]>out["ma60"])&out["ma60"].notna()
     out["stage"]=out.apply(classify_stage,axis=1)

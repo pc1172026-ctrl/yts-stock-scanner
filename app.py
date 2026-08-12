@@ -8,7 +8,7 @@ from yts_engine import load_history
 from stage1_data import stage1_snapshot, load_fundamentals, trust_snapshot
 
 st.set_page_config(
-    page_title="YTS v1.1 穩定排序版",
+    page_title="YTS v1.1.1 300張流動性版",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -95,8 +95,8 @@ def watch_status(r):
 
 ensure_dirs()
 
-st.title("YTS 台股多頭突破回測掃描器 v1.1｜穩定排序版")
-st.caption("技術面＋投信＋營收確認｜EPS／籌碼／大戶暫由人工判斷")
+st.title("YTS 台股多頭突破回測掃描器 v1.1.1｜300張流動性門檻")
+st.caption("技術面＋投信＋營收確認｜當日成交量至少300張｜EPS／籌碼／大戶人工判斷")
 
 hist = load_history()
 stage1 = stage1_snapshot(lookback=10)
@@ -169,13 +169,13 @@ def enrich_stage1(df):
 
 with tabs[0]:
     st.subheader("🔥 技術面初篩")
-    st.caption("Close > 20MA；當日量 ≥ 前20日平均量1.5倍（不含當日）。")
+    st.caption("Close > 20MA；量比 ≥1.5倍；且最新交易日成交量 ≥300張。")
     if cand.empty:
         st.info("目前無候選。")
     else:
         e = enrich_stage1(cand)
         show_cols = [
-            "stock_id","name","close","ma20","ma60","vol_ratio20","yts_score",
+            "stock_id","name","close","ma20","ma60","volume_lots","vol_ratio20","yts_score",
             "trust_status","revenue_double_growth","eps_positive","stage1_score","stage"
         ]
         show_cols = [c for c in show_cols if c in e.columns]
@@ -267,6 +267,7 @@ with tabs[1]:
     st.subheader("🎯 精選候選")
     st.caption(
         "先用技術面縮小範圍，再用投信與營收作確認。"
+        "成交量未滿300張者已在YTS候選階段直接排除；"
         "EPS、主力、大戶、家數差目前不自動淘汰，留給人工複核。"
     )
 
@@ -285,7 +286,7 @@ with tabs[1]:
     else:
         show_cols = [
             "優先級","stock_id","name","close","ma20","ma60",
-            "距MA20%","vol_ratio20","收腳%",
+            "volume_lots","距MA20%","vol_ratio20","收腳%",
             "trust_status","trust_net",
             "revenue_month_yoy","revenue_cum_yoy","revenue_double_growth",
             "第一階段確認數","yts_score","stage1_score","總排序分","stage"
@@ -317,7 +318,7 @@ with tabs[2]:
     else:
         st.caption("這裡只保留技術面位置較佳，且至少有一項投信／營收確認的候選。")
         show_cols = [
-            "stock_id","name","close","距MA20%","vol_ratio20","收腳%",
+            "stock_id","name","close","volume_lots","距MA20%","vol_ratio20","收腳%",
             "trust_status","trust_net",
             "revenue_month_yoy","revenue_cum_yoy","revenue_double_growth",
             "yts_score","stage1_score","總排序分","stage"
